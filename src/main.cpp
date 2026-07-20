@@ -122,6 +122,17 @@ constexpr float shakeDuration = 0.45f;
 constexpr float shakeMagnitude = 8.0f;
 constexpr float flashDuration = 0.25f;
 
+// --- touch controls (phones/tablets) ---
+// Keyboard stays the primary input; on touch devices an on-screen joystick
+// (left half) and a fire/jump button (right half) are shown as well.
+constexpr Vector2 joystickBase{100.0f, screenHeight - 95.0f};
+constexpr float joystickRadius = 55.0f;
+constexpr float joystickDeadzone = 0.15f;   // fraction of radius ignored as noise
+constexpr float touchSplitX = screenWidth * 0.45f;  // left of this = joystick
+constexpr Vector2 actionButtonCenter{screenWidth - 75.0f, screenHeight - 80.0f};
+constexpr float actionButtonRadius = 45.0f;
+constexpr Rectangle pauseButtonRect{screenWidth / 2.0f - 30.0f, 0.0f, 60.0f, 44.0f};
+
 // --- game state ---
 enum class GameState { Playing, Paused, GameOver };
 
@@ -149,6 +160,15 @@ static float fireTimer = 0.0f;
 static float shakeTime = 0.0f;
 static float flashTime = 0.0f;
 
+// touch input, refreshed once per frame in UpdateTouchInput()
+static bool touchControlsVisible = false;  // true on touch devices
+static Vector2 touchDir{0, 0};             // joystick deflection, length <= 1
+static bool touchActionHeld = false;       // finger on the right half (fire)
+static bool touchAnyHeld = false;          // any finger down (jump on the ground)
+static bool touchJustTapped = false;       // a new touch began this frame
+static bool touchPauseTapped = false;      // that new touch hit the pause button
+static int prevTouchCount = 0;
+
 // --- high score persistence ---
 // Web: browser localStorage. Native: a small text file next to the working dir.
 #if defined(PLATFORM_WEB)
@@ -158,6 +178,11 @@ EM_JS(float, LoadBestScore, (), {
 });
 EM_JS(void, SaveBestScore, (float value), {
     localStorage.setItem('game-raylib-best', value);
+});
+// Touch-capable browser (iOS/iPadOS/Android)? Decides whether the on-screen
+// controls are drawn at all.
+EM_JS(int, DetectTouchDevice, (), {
+    return ('ontouchstart' in window || navigator.maxTouchPoints > 0) ? 1 : 0;
 });
 #else
 static const char* bestScoreFile = "highscore.txt";
@@ -292,10 +317,43 @@ static void TakeDamage() {
     SpawnBurst(shipPos, 12, SKYBLUE);
 }
 
+// Poll raylib's touch points once per frame and reduce them to simple
+// intents (joystick direction, action held, taps) the game logic reads.
+static void UpdateTouchInput() {
+    const int count = GetTouchPointCount();
+    if (count > 0) touchControlsVisible = true;  // fallback if detection missed
+
+    touchDir = {0, 0};
+    touchActionHeld = false;
+    touchAnyHeld = false;
+    touchJustTapped = (count > 0 && prevTouchCount == 0);
+    touchPauseTapped = false;
+    prevTouchCount = count;
+
+    for (int i = 0; i < count; i++) {
+        const Vector2 p = GetTouchPosition(i);
+        if (touchJustTapped && CheckCollisionPointRec(p, pauseButtonRect)) {
+            touchPauseTapped = true;
+            continue;  // the pause tap shouldn't also steer or jump
+        }
+        touchAnyHeld = true;
+        if (p.x < touchSplitX) {
+            // joystick: deflection from the base, clamped to the rim
+            Vector2 d{(p.x - joystickBase.x) / joystickRadius,
+                      (p.y - joystickBase.y) / joystickRadius};
+            const float len = sqrtf(d.x * d.x + d.y * d.y);
+            if (len > 1.0f) { d.x /= len; d.y /= len; }
+            if (len > joystickDeadzone) touchDir = d;
+        } else {
+            touchActionHeld = true;
+        }
+    }
+}
+
 static void UpdateCombat(float dt) {
     // --- firing (flight only): hold space, limited by cooldown ---
     fireTimer = std::max(0.0f, fireTimer - dt);
-    if (IsKeyDown(KEY_SPACE) && fireTimer <= 0.0f) {
+    if ((IsKeyDown(KEY_SPACE) || touchActionHeld) && fireTimer <= 0.0f) {
         bullets.push_back({{shipPos.x + shipRadius + 6, shipPos.y}});
         fireTimer = fireCooldown;
     }
@@ -366,6 +424,12 @@ static void UpdateFlying(float dt) {
         dir.x *= invSqrt2;
         dir.y *= invSqrt2;
     }
+    // touch joystick adds its (already length-clamped) deflection; keep the
+    // combined thrust from exceeding full deflection
+    dir.x += touchDir.x;
+    dir.y += touchDir.y;
+    const float dirLen = sqrtf(dir.x * dir.x + dir.y * dir.y);
+    if (dirLen > 1.0f) { dir.x /= dirLen; dir.y /= dirLen; }
     shipVel.x += dir.x * shipAccel * dt;
     shipVel.y += dir.y * shipAccel * dt;
     const float dragFactor = 1.0f / (1.0f + shipDrag * dt);
@@ -443,7 +507,8 @@ static void UpdateGround(float dt) {
 
     // gravity + jump
     shipVel.y += gravity * dt;
-    if (grounded && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))) {
+    if (grounded && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)
+                     || touchAnyHeld)) {
         shipVel.y = -jumpImpulse;
         grounded = false;
     }
@@ -507,6 +572,40 @@ static void DrawShip() {
     const Vector2 backBottom{shipPos.x - shipRadius, shipPos.y + shipRadius};
     DrawTriangle(nose, backTop, backBottom, SKYBLUE);
     DrawTriangleLines(nose, backTop, backBottom, RAYWHITE);
+}
+
+// Semi-transparent overlay showing where to put fingers. Only drawn on
+// touch devices; keyboard players never see it.
+static void DrawTouchControls() {
+    if (!touchControlsVisible) return;
+
+    // pause button: two bars, top-center
+    const float bx = pauseButtonRect.x + pauseButtonRect.width / 2;
+    DrawRectangle(static_cast<int>(bx) - 8, 12, 5, 18, Fade(RAYWHITE, 0.5f));
+    DrawRectangle(static_cast<int>(bx) + 3, 12, 5, 18, Fade(RAYWHITE, 0.5f));
+
+    if (state != GameState::Playing) return;
+
+    if (phase == Phase::Flying) {
+        // joystick: rim plus a knob that follows the deflection
+        const bool active = (touchDir.x != 0.0f || touchDir.y != 0.0f);
+        DrawCircleLinesV(joystickBase, joystickRadius, Fade(RAYWHITE, 0.35f));
+        const Vector2 knob{joystickBase.x + touchDir.x * joystickRadius,
+                           joystickBase.y + touchDir.y * joystickRadius};
+        DrawCircleV(knob, 16.0f, Fade(SKYBLUE, active ? 0.55f : 0.25f));
+
+        DrawCircleLinesV(actionButtonCenter, actionButtonRadius,
+                         Fade(YELLOW, touchActionHeld ? 0.8f : 0.35f));
+        DrawText("FIRE", static_cast<int>(actionButtonCenter.x) - MeasureText("FIRE", 16) / 2,
+                 static_cast<int>(actionButtonCenter.y) - 8, 16,
+                 Fade(YELLOW, touchActionHeld ? 0.9f : 0.4f));
+    } else {
+        DrawCircleLinesV(actionButtonCenter, actionButtonRadius,
+                         Fade(SKYBLUE, touchAnyHeld ? 0.8f : 0.35f));
+        DrawText("JUMP", static_cast<int>(actionButtonCenter.x) - MeasureText("JUMP", 16) / 2,
+                 static_cast<int>(actionButtonCenter.y) - 8, 16,
+                 Fade(SKYBLUE, touchAnyHeld ? 0.9f : 0.4f));
+    }
 }
 
 static void DrawCenteredText(const char* text, int y, int size, Color color) {
@@ -584,6 +683,8 @@ static void DrawScene() {
         DrawText(TextFormat("BEST %5.1f", bestScore), 10, 38, 18, GRAY);
     }
 
+    DrawTouchControls();
+
     // health: one ship glyph per HP, top-right
     for (int i = 0; i < health; i++) {
         const float x = screenWidth - 28.0f - i * 26.0f;
@@ -603,7 +704,8 @@ static void DrawScene() {
     if (state == GameState::Paused) {
         DrawRectangle(0, 0, screenWidth, screenHeight, Color{0, 0, 0, 160});
         DrawCenteredText("PAUSED", 170, 48, RAYWHITE);
-        DrawCenteredText("Press P to resume", 240, 20, GRAY);
+        DrawCenteredText(touchControlsVisible ? "Press P or tap to resume"
+                                              : "Press P to resume", 240, 20, GRAY);
     }
 
     if (state == GameState::GameOver) {
@@ -613,23 +715,25 @@ static void DrawScene() {
         if (score >= bestScore && bestScore > 0.0f) {
             DrawCenteredText("NEW BEST!", 250, 20, GOLD);
         }
-        DrawCenteredText("Press ENTER or R to restart", 285, 20, GRAY);
+        DrawCenteredText(touchControlsVisible ? "Tap to restart"
+                                              : "Press ENTER or R to restart", 285, 20, GRAY);
     }
 }
 
 static void UpdateDrawFrame() {
     const float dt = GetFrameTime();
+    UpdateTouchInput();
 
     switch (state) {
         case GameState::Playing:
-            if (IsKeyPressed(KEY_P)) state = GameState::Paused;
+            if (IsKeyPressed(KEY_P) || touchPauseTapped) state = GameState::Paused;
             else UpdatePlaying(dt);
             break;
         case GameState::Paused:
-            if (IsKeyPressed(KEY_P)) state = GameState::Playing;
+            if (IsKeyPressed(KEY_P) || touchJustTapped) state = GameState::Playing;
             break;
         case GameState::GameOver:
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_R)) ResetRun();
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_R) || touchJustTapped) ResetRun();
             break;
     }
 
@@ -643,6 +747,9 @@ static void UpdateDrawFrame() {
 int main() {
     InitWindow(screenWidth, screenHeight, "Fly Fall");
     bestScore = LoadBestScore();
+#if defined(PLATFORM_WEB)
+    touchControlsVisible = (DetectTouchDevice() != 0);
+#endif
     ResetRun();
 
 #if defined(PLATFORM_WEB)

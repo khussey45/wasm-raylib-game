@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Fly Fall</title>
   <style>
     :root {
@@ -33,6 +34,7 @@
         radial-gradient(circle at 50% 120%, #1a0b3d 0%, #0b0620 45%, var(--bg) 100%);
       font-family: "Menlo", "Consolas", "Courier New", monospace;
       color: var(--text-dim);
+      overscroll-behavior: none; /* no rubber-band scrolling on iOS */
     }
 
     h1 {
@@ -61,6 +63,12 @@
       border-radius: 6px;
       background: #0f0f1e;
       max-width: calc(100vw - 32px);
+      /* touch gestures drive the game, not the page: no scroll/zoom,
+         no long-press callout, no text selection */
+      touch-action: none;
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
     }
 
     .controls {
@@ -80,9 +88,13 @@
   <div class="frame">
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
   </div>
-  <p class="controls">
+  <p class="controls" id="controls-keyboard">
     <b>WASD / ARROWS</b> fly &nbsp;·&nbsp; <b>SPACE</b> shoot / jump &nbsp;·&nbsp;
     <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart
+  </p>
+  <p class="controls" id="controls-touch" hidden>
+    <b>LEFT STICK</b> fly &nbsp;·&nbsp; <b>RIGHT BUTTON</b> shoot / jump &nbsp;·&nbsp;
+    <b>TAP ⏸</b> pause
   </p>
   <div id="status">LOADING…</div>
   <script>
@@ -103,6 +115,12 @@
         e.preventDefault();
       }
     });
+
+    // touch devices get the touch legend instead of the keyboard one
+    if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+      document.getElementById('controls-keyboard').hidden = true;
+      document.getElementById('controls-touch').hidden = false;
+    }
   </script>
   {{{ SCRIPT }}}
 </body>
