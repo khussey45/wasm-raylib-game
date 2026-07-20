@@ -32,6 +32,7 @@ if (EMSCRIPTEN)
         "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
     )
     set_target_properties(${PROJECT_NAME} PROPERTIES
+        OUTPUT_NAME "index"
         LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
     )
 endif()
