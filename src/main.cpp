@@ -87,6 +87,31 @@ constexpr float enemyWaveAmplitude = 55.0f;
 constexpr float enemySpawnInterval = 5.0f;   // seconds between enemies in flight
 constexpr float killBonus = 500.0f;          // score awarded per enemy destroyed
 
+// --- gems (flight phase): fly into one to collect it for bonus points ---
+struct Gem {
+    Vector2 pos;
+    float speed;      // px/s, moving left
+    int type;         // index into gemTypes
+};
+
+struct GemType {
+    Color color;
+    int points;
+    int weight;       // relative spawn chance
+};
+
+constexpr GemType gemTypes[] = {
+    {GREEN,                     100, 60},  // common
+    {Color{34, 230, 255, 255},  250, 30},  // uncommon (neon cyan)
+    {Color{255, 43, 214, 255},  500, 10},  // rare (neon magenta)
+};
+constexpr int gemTypeCount = 3;
+constexpr int gemWeightTotal = 100;       // sum of the weights above
+
+constexpr float gemRadius = 9.0f;
+constexpr float gemSpawnInterval = 2.5f;  // seconds between gems in flight
+constexpr float gemPickupRadius = gemRadius + 6.0f;  // forgiving pickup
+
 // --- difficulty ramp ---
 // Everything starts slow and gradually speeds up as survival time grows.
 constexpr float baseObstacleSpeed = 90.0f;
@@ -108,10 +133,12 @@ struct Particle {
     Color color;
 };
 
-// floating "+500" text where an enemy died
+// floating "+N" text where points were earned (enemy kill, gem pickup)
 struct ScorePopup {
     Vector2 pos;
     float life;       // seconds remaining
+    int value;        // points shown
+    Color color;
 };
 
 constexpr float popupDuration = 0.9f;
@@ -149,6 +176,7 @@ static std::vector<Spike> spikes;
 static std::vector<Ramp> ramps;
 static std::vector<Bullet> bullets;
 static std::vector<Enemy> enemies;
+static std::vector<Gem> gems;
 static std::vector<Particle> particles;
 static std::vector<ScorePopup> popups;
 static float survivalTime = 0.0f;   // drives the difficulty ramp
@@ -156,6 +184,7 @@ static float score = 0.0f;          // survival time + kill bonuses
 static float bestScore = 0.0f;      // best ever (persisted)
 static float spawnTimer = 0.0f;
 static float enemySpawnTimer = 0.0f;
+static float gemSpawnTimer = 0.0f;
 static float fireTimer = 0.0f;
 static float shakeTime = 0.0f;
 static float flashTime = 0.0f;
@@ -214,11 +243,13 @@ static void ResetRun() {
     ramps.clear();
     bullets.clear();
     enemies.clear();
+    gems.clear();
     popups.clear();
     survivalTime = 0.0f;
     score = 0.0f;
     spawnTimer = 0.0f;
     enemySpawnTimer = 0.0f;
+    gemSpawnTimer = 0.0f;
     fireTimer = 0.0f;
 }
 
@@ -229,8 +260,10 @@ static void SwitchPhase() {
     spikes.clear();
     ramps.clear();
     enemies.clear();
+    gems.clear();
     spawnTimer = -phaseSpawnGrace;
     enemySpawnTimer = 0.0f;
+    gemSpawnTimer = 0.0f;
     if (phase == Phase::Flying) {
         phase = Phase::Ground;
         phaseTimer = groundPhaseDuration;
@@ -279,6 +312,21 @@ static void SpawnEnemy() {
         static_cast<int>(margin), static_cast<int>(screenHeight - margin)));
     const float speed = enemyBaseSpeed + speedPerSecond * 0.5f * survivalTime;
     enemies.push_back({{screenWidth + enemyRadius, baseY}, baseY, 0.0f, speed, enemyMaxHp});
+}
+
+static void SpawnGem() {
+    // weighted pick: rarer colors are worth more
+    int roll = GetRandomValue(0, gemWeightTotal - 1);
+    int type = 0;
+    for (int i = 0; i < gemTypeCount; i++) {
+        if (roll < gemTypes[i].weight) { type = i; break; }
+        roll -= gemTypes[i].weight;
+    }
+    const float y = static_cast<float>(GetRandomValue(
+        static_cast<int>(gemRadius), static_cast<int>(screenHeight - gemRadius)));
+    // slightly slower than asteroids so gems feel catchable
+    const float speed = (baseObstacleSpeed + speedPerSecond * survivalTime) * 0.8f;
+    gems.push_back({{screenWidth + gemRadius, y}, speed, type});
 }
 
 static void SpawnBurst(Vector2 at, int count, Color color) {
@@ -395,7 +443,8 @@ static void UpdateCombat(float dt) {
         if (e.hp <= 0) {
             SpawnBurst(e.pos, 20, PURPLE);
             score += killBonus;
-            popups.push_back({e.pos, popupDuration});
+            popups.push_back({e.pos, popupDuration,
+                              static_cast<int>(killBonus), GOLD});
         }
     }
     std::erase_if(enemies, [](const Enemy& e) { return e.hp <= 0; });
@@ -468,6 +517,25 @@ static void UpdateFlying(float dt) {
             break;
         }
     }
+
+    // --- gems: spawn on a fixed interval, drift left, collect on contact ---
+    gemSpawnTimer += dt;
+    if (gemSpawnTimer >= gemSpawnInterval) {
+        gemSpawnTimer = 0.0f;
+        SpawnGem();
+    }
+    for (auto& g : gems) g.pos.x -= g.speed * dt;
+    std::erase_if(gems, [](const Gem& g) { return g.pos.x < -gemRadius; });
+    std::erase_if(gems, [](const Gem& g) {
+        if (!CheckCollisionCircles(shipPos, shipRadius, g.pos, gemPickupRadius)) {
+            return false;
+        }
+        const GemType& t = gemTypes[g.type];
+        score += static_cast<float>(t.points);
+        popups.push_back({g.pos, popupDuration, t.points, t.color});
+        SpawnBurst(g.pos, 8, t.color);
+        return true;
+    });
 
     UpdateCombat(dt);
 }
@@ -651,6 +719,12 @@ static void DrawScene() {
     for (const auto& b : bullets) {
         DrawCircleV(b.pos, bulletRadius, YELLOW);
     }
+    for (const auto& g : gems) {
+        // diamond: a 4-sided polygon with a gentle pulse so gems catch the eye
+        const float pulse = 1.0f + 0.15f * sinf(static_cast<float>(GetTime()) * 5.0f);
+        DrawPoly(g.pos, 4, gemRadius * pulse, 0.0f, gemTypes[g.type].color);
+        DrawPolyLines(g.pos, 4, gemRadius * pulse, 0.0f, RAYWHITE);
+    }
     for (const auto& e : enemies) {
         DrawCircleV(e.pos, enemyRadius, Color{120, 40, 140, 255});
         DrawCircleLinesV(e.pos, enemyRadius, PURPLE);
@@ -666,9 +740,9 @@ static void DrawScene() {
         DrawCircleV(p.pos, 2.0f + 2.0f * t, Fade(p.color, t));
     }
     for (const auto& pop : popups) {
-        const char* label = TextFormat("+%d", static_cast<int>(killBonus));
+        const char* label = TextFormat("+%d", pop.value);
         DrawText(label, static_cast<int>(pop.pos.x) - MeasureText(label, 22) / 2,
-                 static_cast<int>(pop.pos.y), 22, Fade(GOLD, pop.life / popupDuration));
+                 static_cast<int>(pop.pos.y), 22, Fade(pop.color, pop.life / popupDuration));
     }
     EndMode2D();
 
