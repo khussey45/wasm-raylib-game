@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fly Fall</title>
+  <style>
+    :root {
+      --bg: #05030f;
+      --neon-cyan: #22e6ff;
+      --neon-magenta: #ff2bd6;
+      --text-dim: #7a7f9e;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background:
+        radial-gradient(1px 1px at 15% 25%, #ffffffcc, transparent),
+        radial-gradient(1px 1px at 35% 70%, #ffffff88, transparent),
+        radial-gradient(2px 2px at 55% 15%, #22e6ff99, transparent),
+        radial-gradient(1px 1px at 70% 60%, #ffffffaa, transparent),
+        radial-gradient(1px 1px at 85% 30%, #ff2bd677, transparent),
+        radial-gradient(2px 2px at 25% 85%, #ffffff77, transparent),
+        radial-gradient(1px 1px at 90% 80%, #22e6ff88, transparent),
+        radial-gradient(1px 1px at 45% 45%, #ffffff66, transparent),
+        radial-gradient(circle at 50% 120%, #1a0b3d 0%, #0b0620 45%, var(--bg) 100%);
+      font-family: "Menlo", "Consolas", "Courier New", monospace;
+      color: var(--text-dim);
+    }
+
+    h1 {
+      font-size: 2.6rem;
+      letter-spacing: 0.45em;
+      text-indent: 0.45em; /* balance the letter-spacing */
+      color: var(--neon-cyan);
+      text-shadow:
+        0 0 8px var(--neon-cyan),
+        0 0 28px rgba(34, 230, 255, 0.45),
+        0 0 60px rgba(255, 43, 214, 0.25);
+      text-transform: uppercase;
+    }
+
+    .frame {
+      padding: 3px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--neon-cyan), var(--neon-magenta));
+      box-shadow:
+        0 0 24px rgba(34, 230, 255, 0.35),
+        0 0 64px rgba(255, 43, 214, 0.18);
+    }
+
+    canvas {
+      display: block;
+      border-radius: 6px;
+      background: #0f0f1e;
+      max-width: calc(100vw - 32px);
+    }
+
+    .controls {
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-align: center;
+      line-height: 1.8;
+    }
+
+    .controls b { color: var(--neon-magenta); font-weight: normal; }
+
+    #status { min-height: 1.2em; font-size: 0.75rem; letter-spacing: 0.2em; }
+  </style>
+</head>
+<body>
+  <h1>Fly Fall</h1>
+  <div class="frame">
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  </div>
+  <p class="controls">
+    <b>WASD / ARROWS</b> fly &nbsp;·&nbsp; <b>SPACE</b> shoot / jump &nbsp;·&nbsp;
+    <b>P</b> pause &nbsp;·&nbsp; <b>R</b> restart
+  </p>
+  <div id="status">LOADING…</div>
+  <script>
+    var statusElement = document.getElementById('status');
+
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      postRun: [function () { statusElement.textContent = ''; }],
+      setStatus: function (text) {
+        // only surface load progress; everything else stays out of the page
+        statusElement.textContent = text ? 'LOADING…' : '';
+      }
+    };
+
+    // keep the page from scrolling / clicking buttons on game keys
+    window.addEventListener('keydown', function (e) {
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

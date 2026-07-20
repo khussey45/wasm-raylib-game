@@ -1,5 +1,18 @@
 # AGENTS.md
 
+## About This Project
+
+A 2D sci-fi exploration game built in C++23 with raylib. The player pilots a small ship through increasingly dangerous environments: high-speed dodging sections, combat arenas, and explorable areas. See `docs/PRODUCT.md` for the full vision and `docs/ROADMAP.md` for what is currently being built.
+
+Current focus: **v0.1 — a single survival screen** (ship flies in all directions, obstacles fly toward it, collision ends the run, score = survival time, difficulty ramps up).
+
+Key facts:
+
+- Language/toolkit: C++23, raylib 5.5 (fetched via CMake FetchContent)
+- Targets: native macOS (`build/`) and browser via Emscripten/WASM (`build-web/`)
+- Build commands and architecture: see `docs/ARCHITECTURE.md`
+- The game loop lives in `UpdateDrawFrame()` in `src/main.cpp` — this shape is required for the web build (`emscripten_set_main_loop`); do not reintroduce a blocking loop.
+
 ## Project Goal
 
 Build this project incrementally while keeping the codebase easy to understand, test, and maintain.

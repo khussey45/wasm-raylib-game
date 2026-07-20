@@ -29,6 +29,10 @@ if (EMSCRIPTEN)
         "-sUSE_GLFW=3"
         "-sASSERTIONS=1"
         "-sWASM=1"
+        "--shell-file" "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+    )
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
     )
 endif()
 
