@@ -123,8 +123,8 @@ constexpr float gemPopDuration = 0.25f;
 constexpr float gemPopScale = 2.6f;  // outline grows to this multiple
 
 // magnetism: gems near the ship drift toward it, so a close pass still collects
-constexpr float gemMagnetRadius = 80.0f;    // pull starts inside this distance
-constexpr float gemMagnetMaxPull = 420.0f;  // px/s at point-blank range
+constexpr float gemMagnetRadius = 110.0f;    // pull starts inside this distance
+constexpr float gemMagnetMaxPull = 900.0f;   // px/s at point-blank range
 
 // ground gems float at jump height; a full jump peaks ~133 px above the
 // ground (jumpImpulse^2 / (2 * gravity)), so keep them inside that arc
@@ -168,6 +168,15 @@ constexpr float shakeDuration = 0.45f;
 constexpr float shakeMagnitude = 8.0f;
 constexpr float flashDuration = 0.25f;
 
+// --- phase transition feedback: a colored flash + shockwave ring at the
+// instant flight/ground switch, so the moment reads as an event, not a
+// sudden rule change. Color matches the incoming phase (see DrawScene's
+// phase warning banner: orange = ground incoming, sky blue = flight incoming).
+constexpr float transitionFlashDuration = 0.35f;
+constexpr float transitionShakeDuration = 0.3f;
+constexpr float transitionRingDuration = 0.5f;
+constexpr float transitionRingMaxRadius = 240.0f;
+
 // --- touch controls (phones/tablets) ---
 // Keyboard stays the primary input; on touch devices an on-screen joystick
 // (left half) and a fire/jump button (right half) are shown as well.
@@ -208,6 +217,10 @@ static float gemSpawnTimer = 0.0f;
 static float fireTimer = 0.0f;
 static float shakeTime = 0.0f;
 static float flashTime = 0.0f;
+static Color flashColor = RED;  // hit/death flash is red; transitions override this
+static float transitionRingTime = 0.0f;
+static Vector2 transitionRingPos{};
+static Color transitionRingColor = RAYWHITE;
 
 // touch input, refreshed once per frame in UpdateTouchInput()
 static bool touchControlsVisible = false;  // true on touch devices
@@ -295,6 +308,15 @@ static void SwitchPhase() {
         grounded = false;
         shipVel.y = -200.0f;  // small lift-off kick
     }
+
+    // colored flash + shockwave ring centered on the ship, marking the switch
+    const Color transitionColor = (phase == Phase::Ground) ? ORANGE : SKYBLUE;
+    flashTime = transitionFlashDuration;
+    flashColor = transitionColor;
+    shakeTime = std::max(shakeTime, transitionShakeDuration);
+    transitionRingTime = transitionRingDuration;
+    transitionRingPos = shipPos;
+    transitionRingColor = transitionColor;
 }
 
 static void SpawnObstacle() {
@@ -374,6 +396,7 @@ static void OnDeath() {
     state = GameState::GameOver;
     shakeTime = shakeDuration;
     flashTime = flashDuration;
+    flashColor = RED;
     SpawnBurst(shipPos, deathParticleCount, ORANGE);
     if (score > bestScore) {
         bestScore = score;
@@ -392,6 +415,7 @@ static void TakeDamage() {
     invulnTime = invulnDuration;
     shakeTime = shakeDuration * 0.6f;
     flashTime = flashDuration * 0.6f;
+    flashColor = RED;
     SpawnBurst(shipPos, 12, SKYBLUE);
 }
 
@@ -565,7 +589,9 @@ static void UpdateGems(float dt) {
         const float dy = shipPos.y - g.pos.y;
         const float dist = sqrtf(dx * dx + dy * dy);
         if (dist < gemMagnetRadius && dist > 1.0f) {
-            const float pull = gemMagnetMaxPull * (1.0f - dist / gemMagnetRadius);
+            // sqrt falloff: strong pull through most of the radius, only
+            // tapering right at the edge, so a fast pass-by still gets caught
+            const float pull = gemMagnetMaxPull * sqrtf(1.0f - dist / gemMagnetRadius);
             g.pos.x += dx / dist * pull * dt;
             g.pos.y += dy / dist * pull * dt;
         }
@@ -663,6 +689,7 @@ static void UpdatePlaying(float dt) {
 static void UpdateEffects(float dt) {
     shakeTime = std::max(0.0f, shakeTime - dt);
     flashTime = std::max(0.0f, flashTime - dt);
+    transitionRingTime = std::max(0.0f, transitionRingTime - dt);
     for (auto& p : particles) {
         p.pos.x += p.vel.x * dt;
         p.pos.y += p.vel.y * dt;
@@ -796,12 +823,21 @@ static void DrawScene() {
         DrawText(label, static_cast<int>(pop.pos.x) - MeasureText(label, 22) / 2,
                  static_cast<int>(pop.pos.y), 22, Fade(pop.color, pop.life / popupDuration));
     }
+    // phase transition shockwave: an expanding ring from the ship's position
+    // at the moment of the switch
+    if (transitionRingTime > 0.0f) {
+        const float t = 1.0f - transitionRingTime / transitionRingDuration;  // 0 → 1
+        DrawCircleLinesV(transitionRingPos, transitionRingMaxRadius * t,
+                         Fade(transitionRingColor, 1.0f - t));
+        DrawCircleLinesV(transitionRingPos, transitionRingMaxRadius * t * 0.7f,
+                         Fade(transitionRingColor, (1.0f - t) * 0.6f));
+    }
     EndMode2D();
 
-    // hit flash: brief red overlay right after damage/death
+    // hit/death/transition flash: brief colored overlay
     if (flashTime > 0.0f) {
         DrawRectangle(0, 0, screenWidth, screenHeight,
-                      Fade(RED, 0.35f * (flashTime / flashDuration)));
+                      Fade(flashColor, 0.35f * std::min(1.0f, flashTime / flashDuration)));
     }
 
     DrawText(TextFormat("SCORE %5.1f", score), 10, 10, 24, RAYWHITE);
