@@ -38,6 +38,8 @@ The run alternates between the two dodging styles from the product vision:
 - [x] First enemy type: sine-wave drifter, 3 HP, destructible, rams for damage
 - [x] Health (3 HP) with brief invulnerability instead of one-hit death
 - [x] Score = survival time + kill bonuses
+- [x] Tuning: slower obstacle/enemy start speeds, gradual ramp-up preserved
+- [x] Ground phase ramps: safe terrain to ride up and launch off
 
 ## Later (unscoped)
 

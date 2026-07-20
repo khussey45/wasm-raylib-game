@@ -26,7 +26,7 @@ constexpr float invulnDuration = 1.5f;  // seconds of immunity after taking a hi
 enum class Phase { Flying, Ground };
 
 constexpr float flightPhaseDuration = 20.0f;  // seconds of flying
-constexpr float groundPhaseDuration = 12.0f;  // seconds of ground running
+constexpr float groundPhaseDuration = 36.0f;  // seconds of ground running
 constexpr float phaseWarningTime = 2.0f;      // warning shown this long before a switch
 constexpr float phaseSpawnGrace = 1.2f;       // no spawns right after a switch
 
@@ -54,6 +54,16 @@ struct Spike {
     float speed;      // px/s, moving left
 };
 
+// Ramps are safe terrain: the ship rides up the slope and launches off the top.
+struct Ramp {
+    float x;          // left edge (the low end)
+    float width;
+    float height;     // rise at the right edge
+    float speed;      // px/s, moving left
+};
+
+constexpr int rampSpawnChance = 30;  // percent of ground spawns that are ramps
+
 // --- combat (flight phase only) ---
 struct Bullet {
     Vector2 pos;
@@ -72,20 +82,20 @@ constexpr float bulletRadius = 4.0f;
 constexpr float fireCooldown = 0.25f;
 constexpr float enemyRadius = 16.0f;
 constexpr int enemyMaxHp = 3;
-constexpr float enemyBaseSpeed = 110.0f;
+constexpr float enemyBaseSpeed = 70.0f;
 constexpr float enemyWaveAmplitude = 55.0f;
 constexpr float enemySpawnInterval = 5.0f;   // seconds between enemies in flight
-constexpr float killBonus = 5.0f;            // score awarded per enemy destroyed
+constexpr float killBonus = 500.0f;          // score awarded per enemy destroyed
 
 // --- difficulty ramp ---
-// Obstacles get faster and spawn more often as survival time grows.
-constexpr float baseObstacleSpeed = 160.0f;
+// Everything starts slow and gradually speeds up as survival time grows.
+constexpr float baseObstacleSpeed = 90.0f;
 constexpr float speedPerSecond = 4.0f;        // extra px/s per second survived
-constexpr float baseSpawnInterval = 1.1f;     // seconds between spawns at start
-constexpr float minSpawnInterval = 0.30f;
+constexpr float baseSpawnInterval = 1.5f;     // seconds between spawns at start
+constexpr float minSpawnInterval = 0.35f;
 constexpr float spawnRampPerSecond = 0.010f;  // interval shrink per second survived
 
-constexpr float baseSpikeSpeed = 320.0f;
+constexpr float baseSpikeSpeed = 260.0f;
 constexpr float baseSpikeInterval = 1.5f;
 constexpr float minSpikeInterval = 0.55f;
 
@@ -97,6 +107,15 @@ struct Particle {
     float maxLife;
     Color color;
 };
+
+// floating "+500" text where an enemy died
+struct ScorePopup {
+    Vector2 pos;
+    float life;       // seconds remaining
+};
+
+constexpr float popupDuration = 0.9f;
+constexpr float popupRiseSpeed = 40.0f;  // px/s upward drift
 
 constexpr int deathParticleCount = 40;
 constexpr float shakeDuration = 0.45f;
@@ -116,9 +135,11 @@ static int health = maxHealth;
 static float invulnTime = 0.0f;
 static std::vector<Obstacle> obstacles;
 static std::vector<Spike> spikes;
+static std::vector<Ramp> ramps;
 static std::vector<Bullet> bullets;
 static std::vector<Enemy> enemies;
 static std::vector<Particle> particles;
+static std::vector<ScorePopup> popups;
 static float survivalTime = 0.0f;   // drives the difficulty ramp
 static float score = 0.0f;          // survival time + kill bonuses
 static float bestScore = 0.0f;      // best ever (persisted)
@@ -165,8 +186,10 @@ static void ResetRun() {
     invulnTime = 0.0f;
     obstacles.clear();
     spikes.clear();
+    ramps.clear();
     bullets.clear();
     enemies.clear();
+    popups.clear();
     survivalTime = 0.0f;
     score = 0.0f;
     spawnTimer = 0.0f;
@@ -179,6 +202,7 @@ static void SwitchPhase() {
     // the new phase starts spawning.
     obstacles.clear();
     spikes.clear();
+    ramps.clear();
     enemies.clear();
     spawnTimer = -phaseSpawnGrace;
     enemySpawnTimer = 0.0f;
@@ -200,7 +224,7 @@ static void SpawnObstacle() {
     const float y = static_cast<float>(GetRandomValue(
         static_cast<int>(radius), static_cast<int>(screenHeight - radius)));
     const float speed = baseObstacleSpeed + speedPerSecond * survivalTime
-                        + static_cast<float>(GetRandomValue(-30, 60));
+                        + static_cast<float>(GetRandomValue(-20, 40));
     obstacles.push_back({{screenWidth + radius, y}, radius, speed});
 }
 
@@ -215,6 +239,13 @@ static void SpawnSpike() {
         spikes.push_back({x + width + 6.0f, width,
                           static_cast<float>(GetRandomValue(22, 40)), speed});
     }
+}
+
+static void SpawnRamp() {
+    const float speed = baseSpikeSpeed + speedPerSecond * survivalTime;
+    const float width = static_cast<float>(GetRandomValue(90, 150));
+    const float height = static_cast<float>(GetRandomValue(45, 85));
+    ramps.push_back({static_cast<float>(screenWidth), width, height, speed});
 }
 
 static void SpawnEnemy() {
@@ -306,6 +337,7 @@ static void UpdateCombat(float dt) {
         if (e.hp <= 0) {
             SpawnBurst(e.pos, 20, PURPLE);
             score += killBonus;
+            popups.push_back({e.pos, popupDuration});
         }
     }
     std::erase_if(enemies, [](const Enemy& e) { return e.hp <= 0; });
@@ -380,6 +412,35 @@ static void UpdateGround(float dt) {
     // --- the ship slides to its running position; only jumping is controlled ---
     shipPos.x += (groundShipX - shipPos.x) * std::min(1.0f, 4.0f * dt);
 
+    // --- spawn ground obstacles (spikes or ramps) on a shrinking interval ---
+    const float spikeInterval = std::max(
+        minSpikeInterval, baseSpikeInterval - spawnRampPerSecond * survivalTime);
+    spawnTimer += dt;
+    while (spawnTimer >= spikeInterval) {
+        spawnTimer -= spikeInterval;
+        if (GetRandomValue(0, 99) < rampSpawnChance) SpawnRamp();
+        else SpawnSpike();
+    }
+
+    // --- move ground obstacles, drop the ones past the left edge ---
+    for (auto& s : spikes) s.x -= s.speed * dt;
+    std::erase_if(spikes, [](const Spike& s) { return s.x + s.width < 0; });
+    for (auto& r : ramps) r.x -= r.speed * dt;
+    std::erase_if(ramps, [](const Ramp& r) { return r.x + r.width < 0; });
+
+    // --- the surface under the ship: flat ground, unless a ramp is passing below ---
+    float supportY = groundY;
+    float rideVel = 0.0f;  // upward speed the moving slope imparts while riding it
+    for (const auto& r : ramps) {
+        if (shipPos.x >= r.x && shipPos.x <= r.x + r.width) {
+            const float surface = groundY - r.height * (shipPos.x - r.x) / r.width;
+            if (surface < supportY) {
+                supportY = surface;
+                rideVel = -(r.height / r.width) * r.speed;
+            }
+        }
+    }
+
     // gravity + jump
     shipVel.y += gravity * dt;
     if (grounded && (IsKeyDown(KEY_SPACE) || IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))) {
@@ -387,24 +448,15 @@ static void UpdateGround(float dt) {
         grounded = false;
     }
     shipPos.y += shipVel.y * dt;
-    if (shipPos.y + shipRadius >= groundY) {
-        shipPos.y = groundY - shipRadius;
-        shipVel.y = 0;
+    if (shipPos.y + shipRadius >= supportY) {
+        shipPos.y = supportY - shipRadius;
+        // on a ramp the slope carries the ship upward, so leaving the top
+        // launches it; on flat ground the ship just rests
+        shipVel.y = rideVel;
         grounded = true;
+    } else if (shipPos.y + shipRadius < supportY - 1.0f) {
+        grounded = false;  // walked off a ramp edge: airborne, no double jump
     }
-
-    // --- spawn spikes on a shrinking interval ---
-    const float spikeInterval = std::max(
-        minSpikeInterval, baseSpikeInterval - spawnRampPerSecond * survivalTime);
-    spawnTimer += dt;
-    while (spawnTimer >= spikeInterval) {
-        spawnTimer -= spikeInterval;
-        SpawnSpike();
-    }
-
-    // --- move spikes, drop the ones past the left edge ---
-    for (auto& s : spikes) s.x -= s.speed * dt;
-    std::erase_if(spikes, [](const Spike& s) { return s.x + s.width < 0; });
 
     // --- spike hit: costs health (hitbox slimmer than drawn, for fairness) ---
     for (const auto& s : spikes) {
@@ -439,6 +491,11 @@ static void UpdateEffects(float dt) {
         p.life -= dt;
     }
     std::erase_if(particles, [](const Particle& p) { return p.life <= 0; });
+    for (auto& pop : popups) {
+        pop.pos.y -= popupRiseSpeed * dt;
+        pop.life -= dt;
+    }
+    std::erase_if(popups, [](const ScorePopup& p) { return p.life <= 0; });
 }
 
 static void DrawShip() {
@@ -474,6 +531,13 @@ static void DrawScene() {
         DrawRectangle(0, static_cast<int>(groundY), screenWidth,
                       screenHeight - static_cast<int>(groundY), Color{40, 40, 60, 255});
         DrawLine(0, static_cast<int>(groundY), screenWidth, static_cast<int>(groundY), LIGHTGRAY);
+        for (const auto& r : ramps) {
+            DrawTriangle({r.x, groundY},
+                         {r.x + r.width, groundY},
+                         {r.x + r.width, groundY - r.height}, Color{20, 70, 90, 255});
+            DrawLineV({r.x, groundY}, {r.x + r.width, groundY - r.height},
+                      Color{34, 230, 255, 255});
+        }
         for (const auto& s : spikes) {
             DrawTriangle({s.x, groundY},
                          {s.x + s.width, groundY},
@@ -501,6 +565,11 @@ static void DrawScene() {
     for (const auto& p : particles) {
         const float t = p.life / p.maxLife;  // 1 → 0 over lifetime
         DrawCircleV(p.pos, 2.0f + 2.0f * t, Fade(p.color, t));
+    }
+    for (const auto& pop : popups) {
+        const char* label = TextFormat("+%d", static_cast<int>(killBonus));
+        DrawText(label, static_cast<int>(pop.pos.x) - MeasureText(label, 22) / 2,
+                 static_cast<int>(pop.pos.y), 22, Fade(GOLD, pop.life / popupDuration));
     }
     EndMode2D();
 
