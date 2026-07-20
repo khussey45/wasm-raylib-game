@@ -109,8 +109,27 @@ constexpr int gemTypeCount = 3;
 constexpr int gemWeightTotal = 100;       // sum of the weights above
 
 constexpr float gemRadius = 9.0f;
-constexpr float gemSpawnInterval = 2.5f;  // seconds between gems in flight
+constexpr float gemSpawnInterval = 2.5f;  // seconds between gems
 constexpr float gemPickupRadius = gemRadius + 6.0f;  // forgiving pickup
+
+// pickup pop: an expanding, fading diamond outline where a gem was collected
+struct GemPop {
+    Vector2 pos;
+    int type;         // index into gemTypes, for the color
+    float life;       // seconds remaining
+};
+
+constexpr float gemPopDuration = 0.25f;
+constexpr float gemPopScale = 2.6f;  // outline grows to this multiple
+
+// magnetism: gems near the ship drift toward it, so a close pass still collects
+constexpr float gemMagnetRadius = 80.0f;    // pull starts inside this distance
+constexpr float gemMagnetMaxPull = 420.0f;  // px/s at point-blank range
+
+// ground gems float at jump height; a full jump peaks ~133 px above the
+// ground (jumpImpulse^2 / (2 * gravity)), so keep them inside that arc
+constexpr float gemGroundMinRise = 35.0f;
+constexpr float gemGroundMaxRise = 120.0f;
 
 // --- difficulty ramp ---
 // Everything starts slow and gradually speeds up as survival time grows.
@@ -177,6 +196,7 @@ static std::vector<Ramp> ramps;
 static std::vector<Bullet> bullets;
 static std::vector<Enemy> enemies;
 static std::vector<Gem> gems;
+static std::vector<GemPop> gemPops;
 static std::vector<Particle> particles;
 static std::vector<ScorePopup> popups;
 static float survivalTime = 0.0f;   // drives the difficulty ramp
@@ -244,6 +264,7 @@ static void ResetRun() {
     bullets.clear();
     enemies.clear();
     gems.clear();
+    gemPops.clear();
     popups.clear();
     survivalTime = 0.0f;
     score = 0.0f;
@@ -322,10 +343,19 @@ static void SpawnGem() {
         if (roll < gemTypes[i].weight) { type = i; break; }
         roll -= gemTypes[i].weight;
     }
-    const float y = static_cast<float>(GetRandomValue(
-        static_cast<int>(gemRadius), static_cast<int>(screenHeight - gemRadius)));
-    // slightly slower than asteroids so gems feel catchable
-    const float speed = (baseObstacleSpeed + speedPerSecond * survivalTime) * 0.8f;
+    float y;
+    float speed;
+    if (phase == Phase::Flying) {
+        y = static_cast<float>(GetRandomValue(
+            static_cast<int>(gemRadius), static_cast<int>(screenHeight - gemRadius)));
+        // slightly slower than asteroids so gems feel catchable
+        speed = (baseObstacleSpeed + speedPerSecond * survivalTime) * 0.8f;
+    } else {
+        // hover inside the jump arc and scroll with the terrain
+        y = groundY - static_cast<float>(GetRandomValue(
+            static_cast<int>(gemGroundMinRise), static_cast<int>(gemGroundMaxRise)));
+        speed = baseSpikeSpeed + speedPerSecond * survivalTime;
+    }
     gems.push_back({{screenWidth + gemRadius, y}, speed, type});
 }
 
@@ -518,13 +548,28 @@ static void UpdateFlying(float dt) {
         }
     }
 
-    // --- gems: spawn on a fixed interval, drift left, collect on contact ---
+    UpdateCombat(dt);
+}
+
+// Runs in both phases: spawn on a fixed interval, drift left, collect on contact.
+static void UpdateGems(float dt) {
     gemSpawnTimer += dt;
     if (gemSpawnTimer >= gemSpawnInterval) {
         gemSpawnTimer = 0.0f;
         SpawnGem();
     }
-    for (auto& g : gems) g.pos.x -= g.speed * dt;
+    for (auto& g : gems) {
+        g.pos.x -= g.speed * dt;
+        // magnet: pull ramps from zero at the rim to full at the ship
+        const float dx = shipPos.x - g.pos.x;
+        const float dy = shipPos.y - g.pos.y;
+        const float dist = sqrtf(dx * dx + dy * dy);
+        if (dist < gemMagnetRadius && dist > 1.0f) {
+            const float pull = gemMagnetMaxPull * (1.0f - dist / gemMagnetRadius);
+            g.pos.x += dx / dist * pull * dt;
+            g.pos.y += dy / dist * pull * dt;
+        }
+    }
     std::erase_if(gems, [](const Gem& g) { return g.pos.x < -gemRadius; });
     std::erase_if(gems, [](const Gem& g) {
         if (!CheckCollisionCircles(shipPos, shipRadius, g.pos, gemPickupRadius)) {
@@ -533,11 +578,10 @@ static void UpdateFlying(float dt) {
         const GemType& t = gemTypes[g.type];
         score += static_cast<float>(t.points);
         popups.push_back({g.pos, popupDuration, t.points, t.color});
+        gemPops.push_back({g.pos, g.type, gemPopDuration});
         SpawnBurst(g.pos, 8, t.color);
         return true;
     });
-
-    UpdateCombat(dt);
 }
 
 static void UpdateGround(float dt) {
@@ -612,6 +656,7 @@ static void UpdatePlaying(float dt) {
 
     if (phase == Phase::Flying) UpdateFlying(dt);
     else UpdateGround(dt);
+    UpdateGems(dt);
 }
 
 // Effects keep animating even on the game-over screen.
@@ -629,6 +674,8 @@ static void UpdateEffects(float dt) {
         pop.life -= dt;
     }
     std::erase_if(popups, [](const ScorePopup& p) { return p.life <= 0; });
+    for (auto& gp : gemPops) gp.life -= dt;
+    std::erase_if(gemPops, [](const GemPop& gp) { return gp.life <= 0; });
 }
 
 static void DrawShip() {
@@ -725,6 +772,11 @@ static void DrawScene() {
         DrawPoly(g.pos, 4, gemRadius * pulse, 0.0f, gemTypes[g.type].color);
         DrawPolyLines(g.pos, 4, gemRadius * pulse, 0.0f, RAYWHITE);
     }
+    for (const auto& gp : gemPops) {
+        const float t = 1.0f - gp.life / gemPopDuration;  // 0 → 1 over the pop
+        const float size = gemRadius * (1.0f + (gemPopScale - 1.0f) * t);
+        DrawPolyLines(gp.pos, 4, size, 0.0f, Fade(gemTypes[gp.type].color, 1.0f - t));
+    }
     for (const auto& e : enemies) {
         DrawCircleV(e.pos, enemyRadius, Color{120, 40, 140, 255});
         DrawCircleLinesV(e.pos, enemyRadius, PURPLE);
@@ -765,14 +817,21 @@ static void DrawScene() {
         DrawTriangle({x + 16, 22}, {x, 12}, {x, 32}, SKYBLUE);
     }
 
-    // phase switch warning: blink during the last seconds before a switch
+    // phase switch warning: pulsing border glow + banner during the last
+    // seconds before a switch — hard to miss, but nothing over the play area
     if (state == GameState::Playing && phaseTimer <= phaseWarningTime) {
-        if (static_cast<int>(GetTime() * 5) % 2 == 0) {
-            const char* warning = (phase == Phase::Flying)
-                ? "! GRAVITY FAILING — BRACE FOR GROUND !"
-                : "! THRUSTERS ONLINE — PREPARE FOR LIFT-OFF !";
-            DrawCenteredText(warning, 70, 20, YELLOW);
-        }
+        // pulse speeds up as the switch gets closer
+        const float urgency = 1.0f - phaseTimer / phaseWarningTime;  // 0 → 1
+        const float pulse = 0.5f + 0.5f * sinf(static_cast<float>(GetTime())
+                                               * (8.0f + 8.0f * urgency));
+        const Color warnColor = (phase == Phase::Flying) ? ORANGE : SKYBLUE;
+        DrawRectangleLinesEx({0, 0, screenWidth, screenHeight}, 6.0f,
+                             Fade(warnColor, 0.15f + 0.45f * pulse));
+        const char* warning = (phase == Phase::Flying)
+            ? "! GRAVITY FAILING — BRACE FOR GROUND !"
+            : "! THRUSTERS ONLINE — PREPARE FOR LIFT-OFF !";
+        DrawRectangle(0, 60, screenWidth, 36, Fade(BLACK, 0.5f));
+        DrawCenteredText(warning, 68, 22, Fade(warnColor, 0.6f + 0.4f * pulse));
     }
 
     if (state == GameState::Paused) {
